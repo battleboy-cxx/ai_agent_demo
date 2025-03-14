@@ -2,6 +2,7 @@ import fetch from "node-fetch";
 import dotenv from "dotenv";
 import express from "express";
 import { Request, Response } from "express";
+import OpenAI from "openai";
 
 dotenv.config();
 
@@ -47,17 +48,18 @@ function changeShippingAddress(
 }
 
 // ==================== AI 服务 ====================
-const AI_API_URL =
-  process.env.AI_API_URL || "http://10.0.0.168:8080/api/generate";
+const openai = new OpenAI({
+  baseURL: 'https://api.deepseek.com',
+  apiKey: process.env.DEEPSEEKAI_API_KEY,
+});
 
 async function queryAI(prompt: string) {
-  const response = await fetch(AI_API_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "deepseek-r1:14b",
+  const completion = await openai.chat.completions.create({
+      model: "deepseek-chat",
       // 强化版提示词模板
-      prompt: `请严格按以下 JSON 格式响应（仅返回JSON，不要其他文本）：
+      messages: [{
+        role: 'system',
+        content: `请严格按以下 JSON 格式响应（仅返回JSON，不要其他文本）：
       {
         "function_call": {
           "name": "check_shipping|change_shipping_address",
@@ -68,8 +70,6 @@ async function queryAI(prompt: string) {
         }
       }
       
-      用户请求：${prompt}
-      
       示例：
       问："查订单 123 状态"
       答：{"function_call":{"name":"check_shipping","arguments":{"order_id":"123"}}}
@@ -77,13 +77,14 @@ async function queryAI(prompt: string) {
       问："修改订单 456 地址到 789 Oak St"
       答：{"function_call":{"name":"change_shipping_address","arguments":{"order_id":"456","new_address":"789 Oak St"}}}
       `,
-      stream: false,
-      options: {
-        temperature: 0.3, // 降低随机性
-      },
-    }),
+      }, {
+        role: 'user',
+        content: prompt,
+      }],
+      response_format:{'type': 'json_object'}
   });
-  return response.json();
+  const messageContent = completion.choices[0].message.content;
+  return messageContent;
 }
 
 // ==================== Express 服务 ====================
@@ -94,10 +95,14 @@ app.post("/api/query", async (req: Request, res: Response) => {
   const { message } = req.body;
 
   const aiResponse = await queryAI(message);
-  console.log("Raw AI Response:", aiResponse.response);
+  console.log("AI Response:", aiResponse);
 
+  if (!aiResponse) {
+    throw new Error("No response from AI");
+  }
+  
   // 增强版 JSON 提取
-  const jsonMatch = aiResponse.response.match(/{[\s\S]*}/); // 匹配第一个完整 JSON 对象
+  const jsonMatch = aiResponse.match(/{[\s\S]*}/); // 匹配第一个完整 JSON 对象
   if (!jsonMatch) {
     throw new Error("No JSON found in AI response");
   }
